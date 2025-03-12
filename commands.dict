@@ -1,7 +1,6 @@
 move M UW V
 go G OW
 ahead AH HH EH D
-forward F AO R W ER D
 backward B AE K W ER D
 back B AE K
 turn T ER N
@@ -56,3 +55,5 @@ then DH EH N
 deactivate D IY AE K T IH V EY T
 off AO F
 shutdown SH AH T D AW N
+for(2) F ER
+advance AH D V AE N S

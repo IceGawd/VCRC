@@ -55,7 +55,7 @@ int extract_duration(const char** separated, int start, int finish) {
 	for (int i = start; i < finish; i++) {
 		const char* token = separated[i];
 
-		if (strcmp(token, "and")) {
+		if (strcmp(token, "and") && strcmp(token, "in")) {
 			int num = word_to_number(token, &level);
 			int mag = magnitude_value(token);
 			if (num != -1) {

@@ -72,13 +72,13 @@
 	}
 
 	void set_by_max_freq() {
-	    assert(maxFreq > 0);
+		assert(maxFreq > 0);
 		set_frequency(maxFreq);
 	}
 
 
 	void set_by_min_freq() {
-	    assert(minFreq > 0);
+		assert(minFreq > 0);
 		set_frequency(minFreq);
 	}
 #endif
@@ -91,7 +91,7 @@
 #define DEACTIVE 6
 
 // Command synonym lists
-const char* move_forward[] = {"move", "ahead", "forward"};
+const char* move_forward[] = {"move", "ahead", "advance"};
 const char* move_backward[] = {"backward", "reverse", "back"};
 const char* turn_left[] = {"left"};
 const char* turn_right[] = {"right"};
@@ -137,7 +137,7 @@ const char** split_string(const char* str, int* count) {
 		token = strtok(NULL, " ");
 	}
 
-	return result;
+	return (const char**) result;
 }
 
 int search_activation(const char* recognized) {
@@ -145,8 +145,8 @@ int search_activation(const char* recognized) {
 
 	int len = 0;
 
-	char** separated = split_string(input_copy, &len);
-	char* token;
+	const char** separated = split_string(input_copy, &len);
+	const char* token;
 
 	int depth = 0;
 
@@ -190,7 +190,7 @@ int find_command(const char* recognized) {
 	int len = 0;
 
 	const char** separated = split_string(input_copy, &len);
-	char* token;
+	const char* token;
 
 	int fo = 0;
 	int in = 0;
@@ -398,6 +398,25 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 				}
 			}
 		}
+
+		time_t now = time(NULL);
+		pthread_mutex_lock(&queue_mutex);
+		while (command_queue != NULL && command_queue->execute_at <= now) {
+			ScheduledCommand* cmd_to_execute = command_queue;
+			command_queue = command_queue->next;  // Remove from queue
+			pthread_mutex_unlock(&queue_mutex);
+
+			if (activated) {
+				execute_command(cmd_to_execute->command);
+			}
+
+			// printf(command_queue);
+
+			free(cmd_to_execute);
+
+			pthread_mutex_lock(&queue_mutex);
+		}
+		pthread_mutex_unlock(&queue_mutex);
 	}
 }
 
