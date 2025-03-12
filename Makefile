@@ -7,15 +7,12 @@ endif
 
 CC = gcc
 
-SRCS = voice_recognition.c
+SRCS = numbers.c voice_recognition.c
 OBJS = $(SRCS:.c=.o)
 
 CFLAGS = -O3 -Wall -Wextra 
-INCLUDES = -I/usr/local/include
+INCLUDES = -I/usr/local/include -I./
 LIBS = -L/usr/local/lib -lpocketsphinx -lm -lportaudio
-
-SRC = voice_recognition.c
-OUT = voice_recognition
 
 ifeq ($(PLATFORM), rpi)
     CFLAGS += -DPLATFORM_RPI
@@ -33,3 +30,4 @@ $(TARGET): $(OBJS)
 
 clean:
 	rm -f $(OUT)
+	rm -f *.o

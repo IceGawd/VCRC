@@ -1,10 +1,9 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <time.h>
 #include <portaudio.h>
 #include <pocketsphinx.h>
 #include <signal.h>
-#include <ctype.h>
+
+#include "numbers.h"
 
 #ifdef __arm__ // If compiling for Raspberry Pi
 	#include <wiringPi.h>
@@ -14,93 +13,30 @@
 	#define BACK_RIGHT_PIN  23
 #endif
 
+#define FORWARD  1
+#define BACKWARD 2
+#define LEFT     3
+#define RIGHT    4
+#define STOP     5
+
 // Command synonym lists
 const char* move_forward[] = {"move", "go", "ahead", "forward"};
 const char* move_backward[] = {"backward", "reverse", "back"};
-const char* turn_left[] = {"left", "turn left"};
-const char* turn_right[] = {"right", "turn right"};
+const char* turn_left[] = {"left"};
+const char* turn_right[] = {"right"};
 const char* stop[] = {"stop", "halt", "pause"};
 const char* activation[] = {"v", "c", "r"};
 
-typedef struct {
-    const char* word;
-    int value;
-} NumberWord;
-NumberWord units[] = {
-    {"zero", 0}, {"one", 1}, {"two", 2}, {"three", 3}, {"four", 4},
-    {"five", 5}, {"six", 6}, {"seven", 7}, {"eight", 8}, {"nine", 9},
-    {NULL, 0}
-};
-NumberWord teens[] = {
-    {"ten", 10}, {"eleven", 11}, {"twelve", 12}, {"thirteen", 13}, {"fourteen", 14},
-    {"fifteen", 15}, {"sixteen", 16}, {"seventeen", 17}, {"eighteen", 18}, {"nineteen", 19},
-    {NULL, 0}
-};
-NumberWord tens[] = {
-    {"twenty", 20}, {"thirty", 30}, {"forty", 40}, {"fifty", 50},
-    {"sixty", 60}, {"seventy", 70}, {"eighty", 80}, {"ninety", 90},
-    {NULL, 0}
-};
-NumberWord magnitudes[] = {
-    {"hundred", 100}, {"thousand", 1000}, {"million", 1000000},
-    {NULL, 0}
-};
+typedef struct ScheduledCommand {
+	int command;
+	time_t execute_at;
+	struct ScheduledCommand* next;
+} ScheduledCommand;
 
-int word_to_number(const char* word) {
-    for (NumberWord* nw = units; nw->word != NULL; ++nw) {
-        if (strcmp(nw->word, word) == 0) return nw->value;
-    }
-    for (NumberWord* nw = teens; nw->word != NULL; ++nw) {
-        if (strcmp(nw->word, word) == 0) return nw->value;
-    }
-    for (NumberWord* nw = tens; nw->word != NULL; ++nw) {
-        if (strcmp(nw->word, word) == 0) return nw->value;
-    }
-    return -1;
-}
+ScheduledCommand* command_queue = NULL;
+pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-int magnitude_value(const char* word) {
-    for (NumberWord* nw = magnitudes; nw->word != NULL; ++nw) {
-        if (strcmp(nw->word, word) == 0) return nw->value;
-    }
-    return -1;
-}
-
-int convert_number_words_to_int(const char* input) {
-    char* token;
-    char* input_copy = strdup(input);
-    int result = 0, current = 0;
-    char* rest = input_copy;
-
-    while ((token = strtok_r(rest, " -", &rest))) {
-        for (char* p = token;* p; ++p)* p = tolower(*p); // Convert to lowercase
-
-        int num = word_to_number(token);
-        if (num != -1) {
-            current += num;
-        } else {
-            int mag = magnitude_value(token);
-            if (mag != -1) {
-                if (mag == 100) {
-                    current *= mag;
-                } else {
-                    current *= mag;
-                    result += current;
-                    current = 0;
-                }
-            } else {
-                fprintf(stderr, "Unknown number word: %s\n", token);
-                free(input_copy);
-                return -1;
-            }
-        }
-    }
-    result += current;
-    free(input_copy);
-    return result;
-}
-
-int matches_command(const char* recognized, const char* command_list[], int size) {
+int matches_command(const char* recognized, const char* command_list[], int size) {	
 	for (int i = 0; i < size; i++) {
 		if (strcmp(recognized, command_list[i]) == 0) {
 			return 1;
@@ -109,57 +45,168 @@ int matches_command(const char* recognized, const char* command_list[], int size
 	return 0;
 }
 
-void execute_command(const char* command) {
+char** split_string(const char* str, int* count) {
+	int words = 0;
+	for (int i = 0; str[i] != '\0'; i++) {
+		if (str[i] != ' ' && (i == 0 || str[i-1] == ' ')) {
+			words++;
+		}
+	}
+
+	char** result = (char**)malloc(words * sizeof(char*));
+	*count = words;
+
+	int j = 0;
+	char* token = strtok(strdup(str), " ");
+	while (token != NULL) {
+		result[j++] = token;
+		token = strtok(NULL, " ");
+	}
+
+	return result;
+}
+
+int find_command(const char* recognized) {
+	char* input_copy = strdup(recognized);
+
+	int command = 0;
+	int len = 0;
+
+	char** separated = split_string(input_copy, &len);
+	char* token;
+
+	for (int i = 0; i < len; i++) {
+		token = separated[i];
+
+		if (matches_command(token, move_forward, 4)) {
+			command = FORWARD;
+		}
+		if (matches_command(token, move_backward, 3)) {
+			command = BACKWARD;
+		}
+		if (matches_command(token, turn_left, 1)) {
+			command = LEFT;
+		}
+		if (matches_command(token, turn_right, 1)) {
+			command = RIGHT;
+		}
+		if (matches_command(token, stop, 3)) {
+			command = STOP;
+		}
+	}
+
+	free(input_copy);
+	return command;
+}
+
+void schedule_command(int command, int delay_seconds) {
+	ScheduledCommand* new_command = (ScheduledCommand*) malloc(sizeof(ScheduledCommand));
+	new_command->command = command;
+	new_command->execute_at = time(NULL) + delay_seconds;
+	new_command->next = NULL;
+
+	pthread_mutex_lock(&queue_mutex);
+	if (command_queue == NULL) {
+		command_queue = new_command;
+	} else {
+		ScheduledCommand* current = command_queue;
+		while (current->next != NULL) {
+			current = current->next;
+		}
+		current->next = new_command;
+	}
+	pthread_mutex_unlock(&queue_mutex);
+}
+
+int extract_duration(const char** separated, int start, int finish) {
+	int duration = 0;
+
+	for (int i = start; i < finish; i++) {
+		const char* token = separated[i];
+
+		if (strcmp(token, "and")) {
+			int num = word_to_number(token);
+			if (num != -1) {
+				duration = num;
+			}
+			else if (strcmp(token, "second") == 0 || strcmp(token, "seconds") == 0) {
+				// Duration is already in seconds
+			}
+			else if (strcmp(token, "minute") == 0 || strcmp(token, "minutes") == 0) {
+				duration *= 60;
+			}
+			else {
+				duration = 0; // Reset if unrecognized pattern
+			}
+		}
+	}
+
+	return duration;
+}
+
+// /*
+void execute_command(int command) {
 	#ifdef __arm__ // RPi system
-	    if (matches_command(command, move_forward, sizeof(move_forward)/sizeof(move_forward[0]))) {
-	        printf("Command: Move Forward\n");
-	        digitalWrite(FRONT_LEFT_PIN, HIGH);
-	        digitalWrite(FRONT_RIGHT_PIN, HIGH);
-	        digitalWrite(BACK_LEFT_PIN, LOW);
-	        digitalWrite(BACK_RIGHT_PIN, LOW);
-	    } else if (matches_command(command, move_backward, sizeof(move_backward)/sizeof(move_backward[0]))) {
-	        printf("Command: Move Backward\n");
-	        digitalWrite(FRONT_LEFT_PIN, LOW);
-	        digitalWrite(FRONT_RIGHT_PIN, LOW);
-	        digitalWrite(BACK_LEFT_PIN, HIGH);
-	        digitalWrite(BACK_RIGHT_PIN, HIGH);
-	    } else if (matches_command(command, turn_left, sizeof(turn_left)/sizeof(turn_left[0]))) {
-	        printf("Command: Turn Left\n");
-	        digitalWrite(FRONT_LEFT_PIN, HIGH);
-	        digitalWrite(FRONT_RIGHT_PIN, LOW);
-	        digitalWrite(BACK_LEFT_PIN, LOW);
-	        digitalWrite(BACK_RIGHT_PIN, HIGH);
-	    } else if (matches_command(command, turn_right, sizeof(turn_right)/sizeof(turn_right[0]))) {
-	        printf("Command: Turn Right\n");
-	        digitalWrite(FRONT_LEFT_PIN, LOW);
-	        digitalWrite(FRONT_RIGHT_PIN, HIGH);
-	        digitalWrite(BACK_LEFT_PIN, HIGH);
-	        digitalWrite(BACK_RIGHT_PIN, LOW);
-	    } else if (matches_command(command, stop, sizeof(stop)/sizeof(stop[0]))) {
-	        printf("Command: Stop\n");
-	        digitalWrite(FRONT_LEFT_PIN, LOW);
-	        digitalWrite(FRONT_RIGHT_PIN, LOW);
-	        digitalWrite(BACK_LEFT_PIN, LOW);
-	        digitalWrite(BACK_RIGHT_PIN, LOW);
-	    } else {
-	        printf("Unrecognized command: %s\n", command);
-	    }
+		if (command == FORWARD) {
+			printf("Command: Move Forward\n");
+			digitalWrite(FRONT_LEFT_PIN, HIGH);
+			digitalWrite(FRONT_RIGHT_PIN, HIGH);
+			digitalWrite(BACK_LEFT_PIN, LOW);
+			digitalWrite(BACK_RIGHT_PIN, LOW);
+		}
+		else if (command == BACKWARD) {
+			printf("Command: Move Backward\n");
+			digitalWrite(FRONT_LEFT_PIN, LOW);
+			digitalWrite(FRONT_RIGHT_PIN, LOW);
+			digitalWrite(BACK_LEFT_PIN, HIGH);
+			digitalWrite(BACK_RIGHT_PIN, HIGH);
+		}
+		else if (command == LEFT) {
+			printf("Command: Turn Left\n");
+			digitalWrite(FRONT_LEFT_PIN, HIGH);
+			digitalWrite(FRONT_RIGHT_PIN, LOW);
+			digitalWrite(BACK_LEFT_PIN, LOW);
+			digitalWrite(BACK_RIGHT_PIN, HIGH);
+		}
+		else if (command == RIGHT) {
+			printf("Command: Turn Right\n");
+			digitalWrite(FRONT_LEFT_PIN, LOW);
+			digitalWrite(FRONT_RIGHT_PIN, HIGH);
+			digitalWrite(BACK_LEFT_PIN, HIGH);
+			digitalWrite(BACK_RIGHT_PIN, LOW);
+		}
+		else if (command == STOP) {
+			printf("Command: Stop\n");
+			digitalWrite(FRONT_LEFT_PIN, LOW);
+			digitalWrite(FRONT_RIGHT_PIN, LOW);
+			digitalWrite(BACK_LEFT_PIN, LOW);
+			digitalWrite(BACK_RIGHT_PIN, LOW);
+		}
+		else {
+			printf("Unrecognized command: %d\n", command);
+		}
 	#else // Ubuntu system
-	    if (matches_command(command, move_forward, sizeof(move_forward)/sizeof(move_forward[0]))) {
-	        printf("Command: Move Forward\n");
-	    } else if (matches_command(command, move_backward, sizeof(move_backward)/sizeof(move_backward[0]))) {
-	        printf("Command: Move Backward\n");
-	    } else if (matches_command(command, turn_left, sizeof(turn_left)/sizeof(turn_left[0]))) {
-	        printf("Command: Turn Left\n");
-	    } else if (matches_command(command, turn_right, sizeof(turn_right)/sizeof(turn_right[0]))) {
-	        printf("Command: Turn Right\n");
-	    } else if (matches_command(command, stop, sizeof(stop)/sizeof(stop[0]))) {
-	        printf("Command: Stop\n");
-	    } else {
-	        printf("Unrecognized command: %s\n", command);
-	    }
+		if (command == FORWARD) {
+			printf("Command: Move Forward\n");
+		}
+		else if (command == BACKWARD) {
+			printf("Command: Move Backward\n");
+		}
+		else if (command == LEFT) {
+			printf("Command: Turn Left\n");
+		}
+		else if (command == RIGHT) {
+			printf("Command: Turn Right\n");
+		}
+		else if (command == STOP) {
+			printf("Command: Stop\n");
+		}
+		else {
+			printf("Unrecognized command: %d\n", command);
+		}
 	#endif
 }
+// */
 
 void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endpointer_t* ep, short* frame, size_t frame_size) {
 	PaError err;
@@ -183,15 +230,22 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 				E_FATAL("ps_process_raw() failed\n");
 			}
 			if ((hyp = ps_get_hyp(decoder, NULL)) != NULL) {
-				// fprintf(stderr, "PARTIAL RESULT: %s\n", hyp);
-				// fflush(stderr);
+
+				int command = find_command(hyp);
+				fprintf(stderr, "PARTIAL RESULT: %s\n", hyp);
+				// printf("%d\n", command);
+				fflush(stderr);
+
+				if (command != 0) {
+					execute_command(command);
+				}
 			}
 			if (!ps_endpointer_in_speech(ep)) {
-				fprintf(stderr, "Speech end at %.2f\n", ps_endpointer_speech_end(ep));
-				fflush(stderr);
+				// fprintf(stderr, "Speech end at %.2f\n", ps_endpointer_speech_end(ep));
+				// fflush(stderr);
 				ps_end_utt(decoder);
 				if ((hyp = ps_get_hyp(decoder, NULL)) != NULL) {
-					execute_command(hyp);
+					// find_command(hyp);
 
 					printf("%s\n", hyp);
 					fflush(stdout);
@@ -202,6 +256,7 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 }
 
 int main() {
+	// /*
 	PaStream* stream;
 	PaError err;
 	ps_decoder_t* decoder;
@@ -248,6 +303,10 @@ int main() {
 	ps_endpointer_free(ep);
 	ps_free(decoder);
 	ps_config_free(config);
+	// */
+
+	// const char* words[] = {"twenty", "one"};
+	// printf("%d\n", extract_duration(words, 0, 2));
 		
 	return 0;
 }
