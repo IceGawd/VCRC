@@ -88,13 +88,13 @@
 #define DEACTIVE 6
 
 // Command synonym lists
-const char* move_forward[] = {"move", "go", "ahead", "forward"};
+const char* move_forward[] = {"move", "ahead", "forward"};
 const char* move_backward[] = {"backward", "reverse", "back"};
 const char* turn_left[] = {"left"};
 const char* turn_right[] = {"right"};
 const char* stop[] = {"stop", "halt", "pause"};
 const char* activation[] = {"c", "r", "c"};
-const char* deactivate[] = {"deactivate", "off"};
+const char* deactivate[] = {"deactivate", "shutdown"};
 
 typedef struct ScheduledCommand {
 	int command;
@@ -147,7 +147,7 @@ int find_command(const char* recognized) {
 	for (int i = 0; i < len; i++) {
 		token = separated[i];
 
-		if (matches_command(token, move_forward, 4)) {
+		if (matches_command(token, move_forward, 3)) {
 			command = FORWARD;
 		}
 		if (matches_command(token, move_backward, 3)) {
