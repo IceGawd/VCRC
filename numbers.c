@@ -20,16 +20,20 @@ NumberWord magnitudes[] = {
 	{NULL, 0}
 };
 
-int word_to_number(const char* word) {
+int word_to_number(const char* word, int* level) {
 	for (NumberWord* nw = units; nw->word != NULL; ++nw) {
+		*level = 0;
 		if (strcmp(nw->word, word) == 0) return nw->value;
 	}
 	for (NumberWord* nw = teens; nw->word != NULL; ++nw) {
+		*level = 1;
 		if (strcmp(nw->word, word) == 0) return nw->value;
 	}
 	for (NumberWord* nw = tens; nw->word != NULL; ++nw) {
+		*level = 1;
 		if (strcmp(nw->word, word) == 0) return nw->value;
 	}
+	*level = -1;
 	return -1;
 }
 
@@ -40,37 +44,51 @@ int magnitude_value(const char* word) {
 	return -1;
 }
 
-int convert_number_words_to_int(const char* input) {
-	char* token;
-	char* input_copy = strdup(input);
-	int result = 0, current = 0;
-	char* rest = input_copy;
+int extract_duration(const char** separated, int start, int finish) {
+	int duration = 0;
+	int temp = 0;
+	int unit = 0;
 
-	while ((token = strtok_r(rest, " -", &rest))) {
-		for (char* p = token;* p; ++p)* p = tolower(*p); // Convert to lowercase
+	int level = 0;
+	int prevLevel = 3;
 
-		int num = word_to_number(token);
-		if (num != -1) {
-			current += num;
-		}
-		else {
+	for (int i = start; i < finish; i++) {
+		const char* token = separated[i];
+
+		if (strcmp(token, "and")) {
+			int num = word_to_number(token, &level);
 			int mag = magnitude_value(token);
-			if (mag != -1) {
-				if (mag == 100) {
-					current *= mag;
-				} else {
-					current *= mag;
-					result += current;
-					current = 0;
+			if (num != -1) {
+				temp += num;
+				if (prevLevel <= level) {
+					return -1;
 				}
-			} else {
-				fprintf(stderr, "Unknown number word: %s\n", token);
-				free(input_copy);
+			}
+			else if (mag != -1) {
+				temp *= mag;
+				level = 2;
+			}
+			else if ((strcmp(token, "second") == 0 || strcmp(token, "seconds") == 0) && unit == 0) {
+				// Duration is already in seconds
+				unit = 1;
+				duration += temp;
+				return (duration > 0) ? duration : -1;
+			}
+			else if ((strcmp(token, "minute") == 0 || strcmp(token, "minutes") == 0) && unit == 0) {
+				unit = 1;
+				duration += temp;
+				duration *= 60;
+				return (duration > 0) ? duration : -1;
+			}
+			else {
 				return -1;
 			}
 		}
+
+		prevLevel = level;
 	}
-	result += current;
-	free(input_copy);
-	return result;
+
+	duration += temp;
+
+	return (unit) ? duration : -1;
 }

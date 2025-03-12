@@ -18,8 +18,8 @@ extern NumberWord teens[];
 extern NumberWord tens[];
 extern NumberWord magnitudes[];
 
-int word_to_number(const char* word);
+int word_to_number(const char* word, int* level);
 int magnitude_value(const char* word);
-int convert_number_words_to_int(const char* input);
+int extract_duration(const char** separated, int start, int finish);
 
 #endif

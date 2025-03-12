@@ -7,10 +7,13 @@
 
 #ifdef __arm__ // If compiling for Raspberry Pi
 	#include <wiringPi.h>
-	#define FRONT_LEFT_PIN  17
-	#define FRONT_RIGHT_PIN 27
-	#define BACK_LEFT_PIN   22
-	#define BACK_RIGHT_PIN  23
+	#define FRONT_LEFT_PIN	9
+	#define BACK_LEFT_PIN	8
+	#define LEFT_EN_PIN		7
+	#define ACTIVE_LIGHT    15
+	#define FRONT_RIGHT_PIN	28
+	#define BACK_RIGHT_PIN	27
+	#define RIGHT_EN_PIN	29
 
 	#define SETFREQ_SYSCALL_NUM 442
 
@@ -96,6 +99,8 @@ const char* stop[] = {"stop", "halt", "pause"};
 const char* activation[] = {"c", "r", "c"};
 const char* deactivate[] = {"deactivate", "shutdown"};
 
+const char* time_units[] = {"second", "seconds", "minute", "minutes"};
+
 typedef struct ScheduledCommand {
 	int command;
 	time_t execute_at;
@@ -114,7 +119,7 @@ int matches_command(const char* recognized, const char* command_list[], int size
 	return 0;
 }
 
-char** split_string(const char* str, int* count) {
+const char** split_string(const char* str, int* count) {
 	int words = 0;
 	for (int i = 0; str[i] != '\0'; i++) {
 		if (str[i] != ' ' && (i == 0 || str[i-1] == ' ')) {
@@ -133,42 +138,6 @@ char** split_string(const char* str, int* count) {
 	}
 
 	return result;
-}
-
-int find_command(const char* recognized) {
-	char* input_copy = strdup(recognized);
-
-	int command = 0;
-	int len = 0;
-
-	char** separated = split_string(input_copy, &len);
-	char* token;
-
-	for (int i = 0; i < len; i++) {
-		token = separated[i];
-
-		if (matches_command(token, move_forward, 3)) {
-			command = FORWARD;
-		}
-		if (matches_command(token, move_backward, 3)) {
-			command = BACKWARD;
-		}
-		if (matches_command(token, turn_left, 1)) {
-			command = LEFT;
-		}
-		if (matches_command(token, turn_right, 1)) {
-			command = RIGHT;
-		}
-		if (matches_command(token, stop, 3)) {
-			command = STOP;
-		}
-		if (matches_command(token, deactivate, 2)) {
-			command = DEACTIVE;
-		}
-	}
-
-	free(input_copy);
-	return command;
 }
 
 int search_activation(const char* recognized) {
@@ -194,6 +163,8 @@ int search_activation(const char* recognized) {
 }
 
 void schedule_command(int command, int delay_seconds) {
+	printf("Scheduling Command %d for %d seconds\n", command, delay_seconds);
+
 	ScheduledCommand* new_command = (ScheduledCommand*) malloc(sizeof(ScheduledCommand));
 	new_command->command = command;
 	new_command->execute_at = time(NULL) + delay_seconds;
@@ -212,31 +183,76 @@ void schedule_command(int command, int delay_seconds) {
 	pthread_mutex_unlock(&queue_mutex);
 }
 
-int extract_duration(const char** separated, int start, int finish) {
-	int duration = 0;
+int find_command(const char* recognized) {
+	char* input_copy = strdup(recognized);
 
-	for (int i = start; i < finish; i++) {
-		const char* token = separated[i];
+	int command = 0;
+	int len = 0;
 
-		if (strcmp(token, "and")) {
-			int num = word_to_number(token);
-			if (num != -1) {
-				duration = num;
+	const char** separated = split_string(input_copy, &len);
+	char* token;
+
+	int fo = 0;
+	int in = 0;
+	int start = 0;
+	int end = 0;
+
+	for (int i = 0; i < len; i++) {
+		token = separated[i];
+
+		if (strcmp(token, "for") == 0) {
+			in = 0;
+			fo = 1;
+			start = i + 1;
+		}
+		else if (strcmp(token, "in") == 0) {
+			fo = 0;
+			in = 1;
+			start = i + 1;
+		}
+		else if (matches_command(token, move_forward, 3)) {
+			end = i;
+			command = FORWARD;
+		}
+		else if (matches_command(token, move_backward, 3)) {
+			end = i;
+			command = BACKWARD;
+		}
+		else if (matches_command(token, turn_left, 1)) {
+			end = i;
+			command = LEFT;
+		}
+		else if (matches_command(token, turn_right, 1)) {
+			end = i;
+			command = RIGHT;
+		}
+		else if (matches_command(token, stop, 3)) {
+			end = i;
+			command = STOP;
+		}
+		else if (matches_command(token, deactivate, 2)) {
+			end = i;
+			command = DEACTIVE;
+		}
+	}
+
+	if (command != 0) {
+		int duration = extract_duration(separated, start, end);
+		if (duration != -1) {
+			if (fo) {
+				schedule_command(STOP, duration);			
 			}
-			else if (strcmp(token, "second") == 0 || strcmp(token, "seconds") == 0) {
-				// Duration is already in seconds
-			}
-			else if (strcmp(token, "minute") == 0 || strcmp(token, "minutes") == 0) {
-				duration *= 60;
-			}
-			else {
-				duration = 0; // Reset if unrecognized pattern
+			else if (in) {
+				schedule_command(command, duration);
+				command = -1;			
 			}
 		}
 	}
 
-	return duration;
+	free(input_copy);
+	return command;
 }
+
 
 // /*
 void execute_command(int command) {
@@ -361,7 +377,12 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 						#endif
 					}
 					else if (command != 0) {
-						execute_command(command);
+						if (command != -1) {
+							execute_command(command);
+						}
+
+						ps_end_utt(decoder);
+						ps_start_utt(decoder);
 					}
 				}
 			}
@@ -434,8 +455,16 @@ int main() {
 	ps_config_free(config);
 	// */
 
-	// const char* words[] = {"twenty", "one"};
-	// printf("%d\n", extract_duration(words, 0, 2));
-		
+	/*
+	const char* words1[] = {"one", "hundred", "and", "twenty", "seconds"};
+	const char* words2[] = {"thirty", "and", "eleven", "one", "seconds"};
+	const char* words3[] = {"one", "thousand", "and", "twenty", "three", "seconds"};
+	const char* words4[] = {"one", "hundred", "thousand", "twenty", "three", "seconds"};
+	printf("%d\n", extract_duration(words1, 0, 5));
+	printf("%d\n", extract_duration(words2, 0, 5));
+	printf("%d\n", extract_duration(words3, 0, 6));
+	printf("%d\n", extract_duration(words4, 0, 6));
+	*/
+
 	return 0;
 }
