@@ -11,6 +11,73 @@
 	#define FRONT_RIGHT_PIN 27
 	#define BACK_LEFT_PIN   22
 	#define BACK_RIGHT_PIN  23
+
+	#define SETFREQ_SYSCALL_NUM 442
+
+	static int maxFreq = 0;
+	static int minFreq = 0;
+	static int curFreq = 0;
+
+	void init_userspace_governor() {
+		char buf[32];
+
+		FILE* fp;
+		fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "w");
+		fprintf(fp, "userspace");
+		fclose(fp);
+
+
+		fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq", "r");
+		fscanf(fp, "%d", &maxFreq);
+		fclose(fp);
+
+		fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq", "r");
+		fscanf(fp, "%d", &minFreq);
+		fclose(fp);
+
+		fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_setspeed", "r");
+		fscanf(fp, "%d", &curFreq);
+		fclose(fp);
+
+		// Custom syscall test:
+		// Instead of File IO, we use a custom system call to minimize FILE IO time.
+		// Here, we test if it correctly works in the custom kernel.
+		set_by_min_freq();
+
+		fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r");
+		fscanf(fp, "%d", &curFreq);
+		fclose(fp);
+
+		printf("MIN frequency change test: %d == %d\n", curFreq, minFreq);
+
+
+		set_by_max_freq();
+
+		fp = fopen("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq", "r");
+		fscanf(fp, "%d", &curFreq);
+		fclose(fp);
+
+		printf("MAX frequency change test: %d == %d\n", curFreq, maxFreq);
+	}
+
+
+	static void set_frequency(int frequency) {
+		FILE* fp;
+		fp = fopen(POLICY_PATH"scaling_setspeed", "w");
+		fprintf(fp, "%d", frequency);
+		fclose(fp);
+	}
+
+	void set_by_max_freq() {
+	    assert(maxFreq > 0);
+		set_frequency(maxFreq);
+	}
+
+
+	void set_by_min_freq() {
+	    assert(minFreq > 0);
+		set_frequency(minFreq);
+	}
 #endif
 
 #define FORWARD  1
@@ -18,6 +85,7 @@
 #define LEFT     3
 #define RIGHT    4
 #define STOP     5
+#define DEACTIVE 6
 
 // Command synonym lists
 const char* move_forward[] = {"move", "go", "ahead", "forward"};
@@ -25,7 +93,8 @@ const char* move_backward[] = {"backward", "reverse", "back"};
 const char* turn_left[] = {"left"};
 const char* turn_right[] = {"right"};
 const char* stop[] = {"stop", "halt", "pause"};
-const char* activation[] = {"v", "c", "r"};
+const char* activation[] = {"c", "r", "c"};
+const char* deactivate[] = {"deactivate", "off"};
 
 typedef struct ScheduledCommand {
 	int command;
@@ -93,10 +162,35 @@ int find_command(const char* recognized) {
 		if (matches_command(token, stop, 3)) {
 			command = STOP;
 		}
+		if (matches_command(token, deactivate, 2)) {
+			command = DEACTIVE;
+		}
 	}
 
 	free(input_copy);
 	return command;
+}
+
+int search_activation(const char* recognized) {
+	char* input_copy = strdup(recognized);
+
+	int len = 0;
+
+	char** separated = split_string(input_copy, &len);
+	char* token;
+
+	int depth = 0;
+
+	for (int i = 0; i < len; i++) {
+		token = separated[i];
+		if (strcmp(activation[depth], token) == 0) {
+			depth++;
+			if (depth == 3) {
+				return 1;
+			}
+		}
+	}
+	return 0;
 }
 
 void schedule_command(int command, int delay_seconds) {
@@ -210,6 +304,11 @@ void execute_command(int command) {
 
 void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endpointer_t* ep, short* frame, size_t frame_size) {
 	PaError err;
+	int activated = 1;
+
+	#ifdef __arm__
+		set_by_max_freq();
+	#endif
 
 	while (1) {
 		const int16* speech;
@@ -218,6 +317,7 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 			E_ERROR("Error in PortAudio read: %s\n", Pa_GetErrorText(err));
 			break;
 		}
+		
 		speech = ps_endpointer_process(ep, frame);
 		if (speech != NULL) {
 			const char* hyp;
@@ -231,13 +331,38 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 			}
 			if ((hyp = ps_get_hyp(decoder, NULL)) != NULL) {
 
-				int command = find_command(hyp);
-				fprintf(stderr, "PARTIAL RESULT: %s\n", hyp);
-				// printf("%d\n", command);
-				fflush(stderr);
+				if (activated == 0) {
+					fprintf(stderr, "DEACTIVE PARTIAL RESULT: %s\n", hyp);
+					fflush(stderr);
 
-				if (command != 0) {
-					execute_command(command);
+					activated = search_activation(hyp);
+					if (activated == 1) {
+						ps_end_utt(decoder);
+						ps_start_utt(decoder);
+
+						#ifdef __arm__
+							set_by_max_freq();
+						#endif
+					}
+				}
+				else {
+					int command = find_command(hyp);
+					fprintf(stderr, "ACTIVE PARTIAL RESULT: %s\n", hyp);
+					fflush(stderr);
+					// printf("%d\n", command);
+
+					if (command == DEACTIVE) {
+						activated = 0;
+						ps_end_utt(decoder);
+						ps_start_utt(decoder);
+
+						#ifdef __arm__
+							set_by_min_freq();
+						#endif
+					}
+					else if (command != 0) {
+						execute_command(command);
+					}
 				}
 			}
 			if (!ps_endpointer_in_speech(ep)) {
@@ -264,6 +389,10 @@ int main() {
 	ps_endpointer_t* ep;
 	short* frame;
 	size_t frame_size;
+
+	#ifdef __arm__
+		init_userspace_governor();
+	#endif
 
 	config = ps_config_init(NULL);
 	ps_default_search_args(config);
