@@ -6,6 +6,8 @@ back B AE K
 turn T ER N
 left L EH F T
 right R AY T
+leftward L EH F T W ER D
+rightward R AY T W ER D
 stop S T AA P
 halt HH AO L T
 pause P AO Z
@@ -56,4 +58,7 @@ deactivate D IY AE K T IH V EY T
 off AO F
 shutdown SH AH T D AW N
 for(2) F ER
+forward F AO R W ER D
+forward(2) F ER W ER D
+
 advance AH D V AE N S

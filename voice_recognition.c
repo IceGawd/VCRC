@@ -6,6 +6,8 @@
 #include "numbers.h"
 
 #ifdef __arm__ // If compiling for Raspberry Pi
+	// Define GPIO pin assignments for motor control
+
 	#include <wiringPi.h>
 	#define FRONT_LEFT_PIN	9
 	#define BACK_LEFT_PIN	8
@@ -101,12 +103,14 @@ const char* deactivate[] = {"deactivate", "shutdown"};
 
 const char* time_units[] = {"second", "seconds", "minute", "minutes"};
 
+// Structure for queued commands
 typedef struct ScheduledCommand {
 	int command;
 	time_t execute_at;
 	struct ScheduledCommand* next;
 } ScheduledCommand;
 
+// Mutex for thread safety in command queue handling
 ScheduledCommand* command_queue = NULL;
 pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -119,6 +123,12 @@ int matches_command(const char* recognized, const char* command_list[], int size
 	return 0;
 }
 
+/**
+ * Split a string into an array of words.
+ * @param str The input string.
+ * @param count Pointer to store the number of words.
+ * @return Array of words.
+ */
 const char** split_string(const char* str, int* count) {
 	int words = 0;
 	for (int i = 0; str[i] != '\0'; i++) {
@@ -140,6 +150,12 @@ const char** split_string(const char* str, int* count) {
 	return (const char**) result;
 }
 
+/**
+ * Search for a predefined activation phrase in the input words.
+ * @param words Array of words.
+ * @param count Number of words in the array.
+ * @return 1 if activation is detected, otherwise 0.
+ */
 int search_activation(const char* recognized) {
 	char* input_copy = strdup(recognized);
 
@@ -162,6 +178,10 @@ int search_activation(const char* recognized) {
 	return 0;
 }
 
+/**
+ * Add a command to the queue to be executed later.
+ * @param command The command string to be queued.
+ */
 void schedule_command(int command, int delay_seconds) {
 	printf("Scheduling Command %d for %d seconds\n", command, delay_seconds);
 
@@ -183,6 +203,12 @@ void schedule_command(int command, int delay_seconds) {
 	pthread_mutex_unlock(&queue_mutex);
 }
 
+/**
+ * Find a valid command in the user's input.
+ * @param words Array of words.
+ * @param count Number of words.
+ * @return The recognized command string or NULL.
+ */
 int find_command(const char* recognized) {
 	char* input_copy = strdup(recognized);
 
@@ -254,7 +280,10 @@ int find_command(const char* recognized) {
 }
 
 
-// /*
+/**
+ * Control motors based on the given command.
+ * @param command The recognized command (e.g., "forward", "backward", etc.).
+ */
 void execute_command(int command) {
 	#ifdef __arm__ // RPi system
 		if (command == FORWARD) {
@@ -420,6 +449,9 @@ void recognize_and_execute_loop(PaStream* stream, ps_decoder_t* decoder, ps_endp
 	}
 }
 
+/**
+ * Main function to initialize and run the speech-controlled robot system.
+ */
 int main() {
 	// /*
 	PaStream* stream;
@@ -432,8 +464,24 @@ int main() {
 
 	#ifdef __arm__
 		init_userspace_governor();
+
+		/**
+		 * Initialize GPIO pins for motor control using WiringPi.
+		 */
+		wiringPiSetup()
+
+		pinMode(FRONT_LEFT_PIN, OUTPUT)
+		pinMode(BACK_LEFT_PIN, OUTPUT)
+		pinMode(LEFT_EN_PIN, OUTPUT)
+		pinMode(ACTIVE_LIGHT, OUTPUT)
+		pinMode(FRONT_RIGHT_PIN, OUTPUT)
+		pinMode(BACK_RIGHT_PIN, OUTPUT)
+		pinMode(RIGHT_EN_PIN, OUTPUT)
 	#endif
 
+	/**
+	 * PocketSphinx Setup
+	 */
 	config = ps_config_init(NULL);
 	ps_default_search_args(config);
 	ps_config_set_str(config, "dict", "./commands.dict");
